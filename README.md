@@ -5,7 +5,7 @@ This is a Next.js hostel leave automation project.
 1. A student submits one free-form leave request from the home page.
 2. `app/api/leave-request/route.js` sends that text to Gemini, which extracts the leave fields, calculates the number of days, and writes a parent email draft.
 3. The enriched request is saved as a new row in the Notion leave database with `Email Status` set to `Not_Sent`.
-4. `app/api/cron-processor/route.js` is called automatically by Vercel every minute. It finds rows with `Status = Approve` and `Email Status = Not_Sent`.
+4. `app/api/cron-processor/route.js` is called every minute by cron-job.org on the Render web service. It finds rows with `Status = Approve` and `Email Status = Not_Sent`.
 5. The worker generates a gate pass ID and QR code, emails the parent and student, then changes `Email Status` to `Sent`. A failed row is marked `Error` so it is not repeatedly emailed.
 
 ## Required Environment Variables
@@ -24,6 +24,7 @@ SMTP_USER=your_email@gmail.com
 SMTP_PASSWORD=your_google_app_password
 SMTP_FROM=your_email@gmail.com
 CRON_SECRET=your_long_random_secret
+NOTION_APPROVED_STATUS=Approve
 ```
 
 `SMTP_PASSWORD` is a Google App Password, not the normal Gmail password. Share both Notion databases with the Notion integration. Keep `.env` private.
@@ -36,7 +37,19 @@ npm install
 npm run dev
 ```
 
-The form is available at `http://localhost:3000`. The worker endpoint can be triggered manually with `curl` for testing, but Vercel invokes it automatically after deployment.
+The form is available at `http://localhost:3000`. The worker endpoint is `POST /api/cron-processor` and requires an `Authorization: Bearer YOUR_CRON_SECRET` header.
+
+## Render And cron-job.org
+
+The included `render.yaml` uses `npm run build` and `npm start`. In Render, add the secret environment variables and deploy the web service. Configure cron-job.org as follows:
+
+- URL: `https://YOUR-RENDER-SERVICE.onrender.com/api/cron-processor`
+- Method: `POST`
+- Schedule: every 1 minute
+- Header: `Authorization: Bearer YOUR_CRON_SECRET`
+- Header: `Content-Type: application/json`
+
+An idle worker returns `200` with `processed: 0`. A failed row is logged, marked `Error`, and does not stop other rows from being processed.
 
 ## Notion Status Values
 

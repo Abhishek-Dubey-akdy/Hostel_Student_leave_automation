@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: hostel-leave-automation
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CRON_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NOTION_API_KEY
+        sync: false
+      - key: NOTION_LEAVE_DATABASE_ID
+        sync: false
+      - key: NOTION_LOGS_DATABASE_ID
+        sync: false
+      - key: NOTION_APPROVED_STATUS
+        value: Approve
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false

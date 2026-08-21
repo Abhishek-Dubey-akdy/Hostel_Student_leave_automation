@@ -62,6 +62,10 @@ function getLogsDatabaseId() {
   return process.env.NOTION_LOGS_DATABASE_ID || process.env.NOTION_RUN_LOG_DB_ID;
 }
 
+function getApprovedStatus() {
+  return process.env.NOTION_APPROVED_STATUS || "Approve";
+}
+
 function titleProperty(value) {
   return { title: [{ text: { content: String(value) } }] };
 }
@@ -211,7 +215,7 @@ function createFilter(properties) {
 
   return {
     and: [
-      { property: PROPERTY.status, status: { equals: "Approve" } },
+      { property: PROPERTY.status, status: { equals: getApprovedStatus() } },
       { property: PROPERTY.emailStatus, ...emailStatusFilter },
     ],
   };
@@ -333,11 +337,10 @@ async function processLeave({ notion, transporter, page, properties }) {
 }
 
 function isAuthorized(request) {
-  // Vercel supplies the bearer token for scheduled requests when CRON_SECRET is set.
   const cronSecret = process.env.CRON_SECRET;
 
   if (!cronSecret) {
-    return true;
+    return false;
   }
 
   return request.headers.get("authorization") === `Bearer ${cronSecret}`;
@@ -348,6 +351,10 @@ function unauthorizedResponse() {
 }
 
 export async function GET(request) {
+  if (!process.env.CRON_SECRET) {
+    return Response.json({ error: "CRON_SECRET is not configured." }, { status: 500 });
+  }
+
   if (!isAuthorized(request)) {
     return unauthorizedResponse();
   }
@@ -356,6 +363,10 @@ export async function GET(request) {
 }
 
 export async function POST(request) {
+  if (!process.env.CRON_SECRET) {
+    return Response.json({ error: "CRON_SECRET is not configured." }, { status: 500 });
+  }
+
   if (!isAuthorized(request)) {
     return unauthorizedResponse();
   }
@@ -394,13 +405,29 @@ async function processApprovedLeaves() {
       );
     }
 
-    const transporter = createTransporter();
     const query = await notion.dataSources.query({
       data_source_id: dataSourceId,
       filter: createFilter(properties),
       page_size: 50,
     });
     const results = [];
+
+    if (query.results.length === 0) {
+      await safeCreateRunLog(notion, {
+        actionId: randomUUID(),
+        eventType: "INBOUND_PARSE",
+        details: `Idle worker run: no rows matched Status=${getApprovedStatus()} and Email Status=Not_Sent.`,
+      });
+
+      return Response.json({
+        success: true,
+        processed: 0,
+        results: [],
+        message: "No pending approved leave requests.",
+      });
+    }
+
+    const transporter = createTransporter();
 
     const rejectedQuery = await notion.dataSources.query({
       data_source_id: dataSourceId,

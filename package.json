@@ -9,7 +9,11 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@google/genai": "^2.18.0",
+    "@notionhq/client": "^5.25.2",
     "next": "16.3.1",
+    "nodemailer": "^9.0.5",
+    "qrcode": "^1.5.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

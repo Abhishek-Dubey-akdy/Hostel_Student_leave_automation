@@ -412,23 +412,6 @@ async function processApprovedLeaves() {
     });
     const results = [];
 
-    if (query.results.length === 0) {
-      await safeCreateRunLog(notion, {
-        actionId: randomUUID(),
-        eventType: "INBOUND_PARSE",
-        details: `Idle worker run: no rows matched Status=${getApprovedStatus()} and Email Status=Not_Sent.`,
-      });
-
-      return Response.json({
-        success: true,
-        processed: 0,
-        results: [],
-        message: "No pending approved leave requests.",
-      });
-    }
-
-    const transporter = createTransporter();
-
     const rejectedQuery = await notion.dataSources.query({
       data_source_id: dataSourceId,
       filter: createRejectFilter(properties),
@@ -456,6 +439,26 @@ async function processApprovedLeaves() {
         });
       }
     }
+
+    if (query.results.length === 0) {
+      await safeCreateRunLog(notion, {
+        actionId: randomUUID(),
+        eventType: "INBOUND_PARSE",
+        details: `Idle worker run: no rows matched Status=${getApprovedStatus()} and Email Status=Not_Sent. Rejected rows checked: ${rejectedQuery.results.length}.`,
+      });
+
+      return Response.json({
+        success: true,
+        processed: results.length,
+        results,
+        message:
+          results.length > 0
+            ? "Rejected leave requests marked as Error."
+            : "No pending approved leave requests.",
+      });
+    }
+
+    const transporter = createTransporter();
 
     for (const page of query.results) {
       try {
@@ -499,6 +502,8 @@ async function processApprovedLeaves() {
       success: true,
       processed: results.length,
       results,
+      approvedFound: query.results.length,
+      rejectedFound: rejectedQuery.results.length,
       message:
         results.length === 0
           ? "No leave requests are currently approved and marked Not_Sent."

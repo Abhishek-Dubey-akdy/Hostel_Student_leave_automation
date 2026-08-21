@@ -154,11 +154,12 @@ function createTransporter() {
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
+    family: 4,
     secure: process.env.SMTP_SECURE === "true",
     requireTLS: process.env.SMTP_SECURE !== "true",
-    connectionTimeout: 30000,
-    greetingTimeout: 30000,
-    socketTimeout: 30000,
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASSWORD,
@@ -170,11 +171,12 @@ function createGmailFallbackTransporter() {
   return nodemailer.createTransport({
     host: "smtp.gmail.com",
     port: 587,
+    family: 4,
     secure: false,
     requireTLS: true,
-    connectionTimeout: 30000,
-    greetingTimeout: 30000,
-    socketTimeout: 30000,
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASSWORD,
@@ -188,13 +190,25 @@ async function sendMailWithFallback(transporter, message) {
   } catch (firstError) {
     const configuredPort = Number(process.env.SMTP_PORT || 587);
 
-    if (configuredPort === 587) {
-      throw firstError;
-    }
-
-    console.warn("Primary SMTP transport failed; retrying Gmail on port 587.", {
+    console.warn("Primary SMTP transport failed; retrying Gmail on the alternate port.", {
       message: getErrorMessage(firstError),
     });
+
+    if (configuredPort === 587) {
+      return nodemailer.createTransport({
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        family: 4,
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000,
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASSWORD,
+        },
+      }).sendMail(message);
+    }
 
     return createGmailFallbackTransporter().sendMail(message);
   }

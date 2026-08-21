@@ -152,17 +152,52 @@ function createTransporter() {
   }
 
   return nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT),
-  secure: process.env.SMTP_SECURE === "true",
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  socketTimeout: 20000,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASSWORD,
-  },
-});
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: process.env.SMTP_SECURE === "true",
+    requireTLS: process.env.SMTP_SECURE !== "true",
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 30000,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASSWORD,
+    },
+  });
+}
+
+function createGmailFallbackTransporter() {
+  return nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 30000,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASSWORD,
+    },
+  });
+}
+
+async function sendMailWithFallback(transporter, message) {
+  try {
+    return await transporter.sendMail(message);
+  } catch (firstError) {
+    const configuredPort = Number(process.env.SMTP_PORT || 587);
+
+    if (configuredPort === 587) {
+      throw firstError;
+    }
+
+    console.warn("Primary SMTP transport failed; retrying Gmail on port 587.", {
+      message: getErrorMessage(firstError),
+    });
+
+    return createGmailFallbackTransporter().sendMail(message);
+  }
 }
 
 async function getDatabaseSchema(notion, databaseId) {
@@ -305,27 +340,35 @@ async function processLeave({ notion, transporter, page, properties }) {
     leave.parentDraft ||
     `Dear Parent,\n\n${leave.studentName || "Your student"} has requested hostel leave from ${outDate} to ${inDate} for ${leave.reason || "the stated reason"}.\n\nPlease contact the hostel office if you have any questions.`;
 
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM,
-    to: leave.parentEmail,
-    subject: `Hostel leave request for ${leave.studentName || "your student"}`,
-    text: parentText,
-  });
+  try {
+    await sendMailWithFallback(transporter, {
+      from: process.env.SMTP_FROM,
+      to: leave.parentEmail,
+      subject: `Hostel leave request for ${leave.studentName || "your student"}`,
+      text: parentText,
+    });
+  } catch (error) {
+    throw new Error(`Parent email failed: ${getErrorMessage(error)}`);
+  }
 
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM,
-    to: leave.studentEmail,
-    subject: `Your hostel gate pass: ${gatePassId}`,
-    text: `Your hostel leave has been approved.\n\nGate Pass ID: ${gatePassId}\nLeave dates: ${outDate} to ${inDate}\nDestination: ${leave.destination || "Not specified"}`,
-    attachments: [
-      {
-        filename: `${gatePassId}.png`,
-        content: qrBase64,
-        encoding: "base64",
-        contentType: "image/png",
-      },
-    ],
-  });
+  try {
+    await sendMailWithFallback(transporter, {
+      from: process.env.SMTP_FROM,
+      to: leave.studentEmail,
+      subject: `Your hostel gate pass: ${gatePassId}`,
+      text: `Your hostel leave has been approved.\n\nGate Pass ID: ${gatePassId}\nLeave dates: ${outDate} to ${inDate}\nDestination: ${leave.destination || "Not specified"}`,
+      attachments: [
+        {
+          filename: `${gatePassId}.png`,
+          content: qrBase64,
+          encoding: "base64",
+          contentType: "image/png",
+        },
+      ],
+    });
+  } catch (error) {
+    throw new Error(`Student email failed: ${getErrorMessage(error)}`);
+  }
 
   await safeCreateRunLog(notion, {
     actionId,

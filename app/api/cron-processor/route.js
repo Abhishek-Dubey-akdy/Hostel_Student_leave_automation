@@ -2,6 +2,8 @@ import { Client } from "@notionhq/client";
 import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
 
 export const runtime = "nodejs";
 
@@ -150,14 +152,17 @@ function createTransporter() {
   }
 
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT),
-    secure: process.env.SMTP_SECURE === "true",
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD,
-    },
-  });
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT),
+  secure: process.env.SMTP_SECURE === "true",
+  connectionTimeout: 15000,
+  greetingTimeout: 15000,
+  socketTimeout: 20000,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASSWORD,
+  },
+});
 }
 
 async function getDatabaseSchema(notion, databaseId) {

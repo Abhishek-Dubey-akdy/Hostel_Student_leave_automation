@@ -136,6 +136,10 @@ function getDateForEmail(value) {
   return value || "the approved leave dates";
 }
 
+function ipv4Lookup(hostname, options, callback) {
+  dns.lookup(hostname, { ...options, family: 4 }, callback);
+}
+
 function createTransporter() {
   // SMTP credentials stay on the server; they are never sent to the browser.
   const required = [
@@ -158,6 +162,7 @@ function createTransporter() {
     host: process.env.SMTP_HOST,
     port: smtpPort,
     family: 4,
+    lookup: ipv4Lookup,
     secure: smtpPort === 465,
     requireTLS: smtpPort === 587,
     connectionTimeout: 8000,
@@ -175,6 +180,7 @@ function createGmailFallbackTransporter() {
     host: "smtp.gmail.com",
     port: 587,
     family: 4,
+    lookup: ipv4Lookup,
     secure: false,
     requireTLS: true,
     connectionTimeout: 8000,
@@ -203,6 +209,7 @@ async function sendMailWithFallback(transporter, message) {
         port: 465,
         secure: true,
         family: 4,
+        lookup: ipv4Lookup,
         connectionTimeout: 8000,
         greetingTimeout: 8000,
         socketTimeout: 10000,

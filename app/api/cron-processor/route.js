@@ -137,7 +137,11 @@ function getDateForEmail(value) {
 }
 
 function ipv4Lookup(hostname, options, callback) {
-  dns.lookup(hostname, { ...options, family: 4 }, callback);
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+  return dns.lookup(hostname, { ...options, family: 4 }, callback);
 }
 
 function createTransporter() {
@@ -155,73 +159,32 @@ function createTransporter() {
     throw new Error(`Missing SMTP environment variables: ${missing.join(", ")}`);
   }
 
-  const configuredPort = Number(process.env.SMTP_PORT || 587);
-  const smtpPort = configuredPort === 465 ? 587 : configuredPort;
+  const port = Number(process.env.SMTP_PORT || 587);
+  const isSecure = port === 465 || process.env.SMTP_SECURE === "true";
 
   return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: smtpPort,
-    family: 4,
+    host: process.env.SMTP_HOST || "smtp.gmail.com",
+    port: port,
+    secure: isSecure,
+    requireTLS: port === 587,
     lookup: ipv4Lookup,
-    secure: smtpPort === 465,
-    requireTLS: smtpPort === 587,
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 10000,
+    family: 4,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASSWORD,
     },
-  });
-}
-
-function createGmailFallbackTransporter() {
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    family: 4,
-    lookup: ipv4Lookup,
-    secure: false,
-    requireTLS: true,
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 10000,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD,
+    tls: {
+      rejectUnauthorized: false, // Prevents self-signed/proxy cert drops in cloud containers
     },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
   });
 }
 
-async function sendMailWithFallback(transporter, message) {
-  try {
-    return await transporter.sendMail(message);
-  } catch (firstError) {
-    const configuredPort = Number(process.env.SMTP_PORT || 587);
 
-    console.warn("Primary SMTP transport failed; retrying Gmail on the alternate port.", {
-      message: getErrorMessage(firstError),
-    });
-
-    if (configuredPort === 587) {
-      return nodemailer.createTransport({
-        host: "smtp.gmail.com",
-        port: 465,
-        secure: true,
-        family: 4,
-        lookup: ipv4Lookup,
-        connectionTimeout: 8000,
-        greetingTimeout: 8000,
-        socketTimeout: 10000,
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASSWORD,
-        },
-      }).sendMail(message);
-    }
-
-    return createGmailFallbackTransporter().sendMail(message);
-  }
+async function sendMail(transporter, message) {
+  return await transporter.sendMail(message);
 }
 
 async function getDatabaseSchema(notion, databaseId) {
@@ -365,7 +328,7 @@ async function processLeave({ notion, transporter, page, properties }) {
     `Dear Parent,\n\n${leave.studentName || "Your student"} has requested hostel leave from ${outDate} to ${inDate} for ${leave.reason || "the stated reason"}.\n\nPlease contact the hostel office if you have any questions.`;
 
   try {
-    await sendMailWithFallback(transporter, {
+    await sendMail(transporter, {
       from: process.env.SMTP_FROM,
       to: leave.parentEmail,
       subject: `Hostel leave request for ${leave.studentName || "your student"}`,
@@ -376,7 +339,7 @@ async function processLeave({ notion, transporter, page, properties }) {
   }
 
   try {
-    await sendMailWithFallback(transporter, {
+    await sendMail(transporter, {
       from: process.env.SMTP_FROM,
       to: leave.studentEmail,
       subject: `Your hostel gate pass: ${gatePassId}`,

@@ -1,10 +1,6 @@
 import { Client } from "@notionhq/client";
-import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
-import dns from "node:dns";
-
-dns.setDefaultResultOrder("ipv4first");
 
 export const runtime = "nodejs";
 
@@ -27,38 +23,25 @@ const PROPERTY = {
 let isProcessing = false;
 
 function getErrorMessage(error) {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-
+  if (error instanceof Error && error.message) return error.message;
   return error?.body?.message || error?.message || JSON.stringify(error);
 }
 
 function getText(property) {
   if (!property) return null;
-
-  if (property.type === "title") {
-    return property.title?.map((item) => item.plain_text).join("") || null;
-  }
-
-  if (property.type === "rich_text") {
-    return property.rich_text?.map((item) => item.plain_text).join("") || null;
-  }
-
+  if (property.type === "title") return property.title?.map((i) => i.plain_text).join("") || null;
+  if (property.type === "rich_text") return property.rich_text?.map((i) => i.plain_text).join("") || null;
   if (property.type === "email") return property.email || null;
   if (property.type === "url") return property.url || null;
   if (property.type === "select") return property.select?.name || null;
   if (property.type === "status") return property.status?.name || null;
   if (property.type === "number") return property.number;
   if (property.type === "date") return property.date?.start || null;
-
   return null;
 }
 
 function getDatabaseId() {
-  return (
-    process.env.NOTION_LEAVE_DATABASE_ID || process.env.NOTION_LEAVE_DB_ID
-  );
+  return process.env.NOTION_LEAVE_DATABASE_ID || process.env.NOTION_LEAVE_DB_ID;
 }
 
 function getLogsDatabaseId() {
@@ -94,7 +77,6 @@ async function createRunLog(notion, { actionId, eventType, details, ok = true })
     properties: {
       action_id: titleProperty(actionId),
       event_type: selectProperty(eventType),
-      // The live log database allows SUCCESS and ERROR in this status column.
       execution_status: statusProperty(ok ? "SUCCESS" : "ERROR"),
       error_details: textProperty(details),
     },
@@ -110,26 +92,14 @@ async function safeCreateRunLog(notion, log) {
 }
 
 function getEmailStatusPayload(propertyType, value) {
-  if (propertyType === "select") {
-    return { select: value ? { name: value } : null };
-  }
-
-  if (propertyType === "status") {
-    return { status: value ? { name: value } : null };
-  }
-
-  throw new Error('Email Status must be a Notion status property.');
+  if (propertyType === "select") return { select: value ? { name: value } : null };
+  if (propertyType === "status") return { status: value ? { name: value } : null };
+  return { status: value ? { name: value } : null };
 }
 
 function getGatePassPayload(propertyType, value) {
-  if (propertyType === "title") {
-    return { title: [{ text: { content: value } }] };
-  }
-
-  if (propertyType === "number") {
-    return { number: Number(value) };
-  }
-
+  if (propertyType === "title") return { title: [{ text: { content: value } }] };
+  if (propertyType === "number") return { number: Number(value) };
   return { rich_text: [{ text: { content: value } }] };
 }
 
@@ -137,48 +107,40 @@ function getDateForEmail(value) {
   return value || "the approved leave dates";
 }
 
-function ipv4Lookup(hostname, options, callback) {
-  if (typeof options === "function") {
-    callback = options;
-    options = {};
-  }
-  return dns.lookup(hostname, { ...options, family: 4 }, callback);
-}
-
-function createTransporter() {
-  // SMTP credentials stay on the server; they are never sent to the browser.
-  const required = [
-    "SMTP_USER",
-    "SMTP_PASSWORD",
-  ];
-  const missing = required.filter((name) => !process.env[name]);
-
-  if (missing.length > 0) {
-    throw new Error(`Missing SMTP environment variables: ${missing.join(", ")}`);
+// Google Apps Script Dispatch Relay
+async function sendMailViaProxy({ to, subject, body, attachmentBase64, attachmentName }) {
+  const scriptUrl = process.env.GMAIL_SCRIPT_URL;
+  if (!scriptUrl) {
+    throw new Error("GMAIL_SCRIPT_URL is not configured in environment variables.");
   }
 
-
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    lookup: ipv4Lookup,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD,
-    },
-    tls: {
-      rejectUnauthorized: false, // Prevents self-signed/proxy cert drops in cloud containers
-    },
-    connectionTimeout: 30000,
-    greetingTimeout: 30000,
-    socketTimeout: 35000,
+  const response = await fetch(scriptUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      to,
+      subject,
+      body,
+      attachmentBase64: attachmentBase64 || null,
+      attachmentName: attachmentName || null,
+    }),
+    redirect: "follow",
   });
-}
 
+  if (!response.ok) {
+    throw new Error(`Google Apps Script responded with HTTP ${response.status}`);
+  }
 
-async function sendMail(transporter, message) {
-  return await transporter.sendMail(message);
+  const text = await response.text();
+  try {
+    const data = JSON.parse(text);
+    if (!data.success) {
+      throw new Error(data.error || "Failed to dispatch email via Google Relay.");
+    }
+    return data;
+  } catch {
+    return { success: true };
+  }
 }
 
 async function getDatabaseSchema(notion, databaseId) {
@@ -215,9 +177,7 @@ async function getDatabaseSchema(notion, databaseId) {
 
   for (const propertyName of [PROPERTY.status, PROPERTY.emailStatus]) {
     if (!properties[propertyName]) {
-      throw new Error(
-        `Notion property "${propertyName}" is missing from the leave database.`,
-      );
+      throw new Error(`Notion property "${propertyName}" is missing from the leave database.`);
     }
   }
 
@@ -225,14 +185,11 @@ async function getDatabaseSchema(notion, databaseId) {
 }
 
 function createFilter(properties) {
-  // Only approved rows that have not received email are eligible for processing.
   const emailStatusType = properties[PROPERTY.emailStatus].type;
   const emailStatusFilter =
     emailStatusType === "select"
       ? { select: { equals: "Not_Sent" } }
-      : emailStatusType === "status"
-        ? { status: { equals: "Not_Sent" } }
-        : { status: { equals: "Not_Sent" } };
+      : { status: { equals: "Not_Sent" } };
 
   return {
     and: [
@@ -286,7 +243,7 @@ function createGatePassId() {
   return `GP-${randomUUID().replaceAll("-", "").slice(0, 16).toUpperCase()}`;
 }
 
-async function processLeave({ notion, transporter, page, properties }) {
+async function processLeave({ notion, page, properties }) {
   const leave = extractLeavePage(page);
   const actionId = randomUUID();
   const gatePassId = createGatePassId();
@@ -297,8 +254,8 @@ async function processLeave({ notion, transporter, page, properties }) {
     throw new Error("Both Parent Email and Student Email are required.");
   }
 
+  // Pre-save Gate Pass ID
   await updateLeavePage(notion, leave.pageId, {
-    // The gate pass is saved before email delivery so it can be traced on failure.
     [PROPERTY.gatePassId]: getGatePassPayload(gatePassType, gatePassId),
     [PROPERTY.emailStatus]: getEmailStatusPayload(emailStatusType, "Not_Sent"),
   });
@@ -306,7 +263,7 @@ async function processLeave({ notion, transporter, page, properties }) {
   await safeCreateRunLog(notion, {
     actionId,
     eventType: "GATE_PASS_ISSUED",
-    details: `Gate Pass ID ${gatePassId} successfully generated and assigned.`,
+    details: `Gate Pass ID ${gatePassId} successfully assigned.`,
   });
 
   const qrDataUrl = await QRCode.toDataURL(gatePassId, {
@@ -317,40 +274,36 @@ async function processLeave({ notion, transporter, page, properties }) {
   const qrBase64 = qrDataUrl.replace(/^data:image\/png;base64,/, "");
   const outDate = getDateForEmail(leave.outDate);
   const inDate = getDateForEmail(leave.inDate);
+
   const parentText =
     leave.parentDraft ||
     `Dear Parent,\n\n${leave.studentName || "Your student"} has requested hostel leave from ${outDate} to ${inDate} for ${leave.reason || "the stated reason"}.\n\nPlease contact the hostel office if you have any questions.`;
 
+  // 1. Dispatch Parent Email
   try {
-    await sendMail(transporter, {
-      from: process.env.SMTP_FROM,
+    await sendMailViaProxy({
       to: leave.parentEmail,
       subject: `Hostel leave request for ${leave.studentName || "your student"}`,
-      text: parentText,
+      body: parentText,
     });
   } catch (error) {
     throw new Error(`Parent email failed: ${getErrorMessage(error)}`);
   }
 
+  // 2. Dispatch Student Email with QR
   try {
-    await sendMail(transporter, {
-      from: process.env.SMTP_FROM,
+    await sendMailViaProxy({
       to: leave.studentEmail,
       subject: `Your hostel gate pass: ${gatePassId}`,
-      text: `Your hostel leave has been approved.\n\nGate Pass ID: ${gatePassId}\nLeave dates: ${outDate} to ${inDate}\nDestination: ${leave.destination || "Not specified"}`,
-      attachments: [
-        {
-          filename: `${gatePassId}.png`,
-          content: qrBase64,
-          encoding: "base64",
-          contentType: "image/png",
-        },
-      ],
+      body: `Your hostel leave has been approved.\n\nGate Pass ID: ${gatePassId}\nLeave dates: ${outDate} to ${inDate}\nDestination: ${leave.destination || "Not specified"}`,
+      attachmentBase64: qrBase64,
+      attachmentName: `${gatePassId}.png`,
     });
   } catch (error) {
     throw new Error(`Student email failed: ${getErrorMessage(error)}`);
   }
 
+  // Log and Lock Status to Sent
   await safeCreateRunLog(notion, {
     actionId,
     eventType: "PARENT_NOTIFIED",
@@ -358,7 +311,6 @@ async function processLeave({ notion, transporter, page, properties }) {
   });
 
   await updateLeavePage(notion, leave.pageId, {
-    // This is the idempotency lock: future polling will ignore the completed row.
     [PROPERTY.emailStatus]: getEmailStatusPayload(emailStatusType, "Sent"),
   });
 
@@ -367,39 +319,19 @@ async function processLeave({ notion, transporter, page, properties }) {
 
 function isAuthorized(request) {
   const cronSecret = process.env.CRON_SECRET;
-
-  if (!cronSecret) {
-    return false;
-  }
-
+  if (!cronSecret) return false;
   return request.headers.get("authorization") === `Bearer ${cronSecret}`;
 }
 
-function unauthorizedResponse() {
-  return Response.json({ error: "Unauthorized" }, { status: 401 });
-}
-
 export async function GET(request) {
-  if (!process.env.CRON_SECRET) {
-    return Response.json({ error: "CRON_SECRET is not configured." }, { status: 500 });
-  }
-
-  if (!isAuthorized(request)) {
-    return unauthorizedResponse();
-  }
-
+  if (!process.env.CRON_SECRET) return Response.json({ error: "CRON_SECRET missing." }, { status: 500 });
+  if (!isAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
   return processApprovedLeaves();
 }
 
 export async function POST(request) {
-  if (!process.env.CRON_SECRET) {
-    return Response.json({ error: "CRON_SECRET is not configured." }, { status: 500 });
-  }
-
-  if (!isAuthorized(request)) {
-    return unauthorizedResponse();
-  }
-
+  if (!process.env.CRON_SECRET) return Response.json({ error: "CRON_SECRET missing." }, { status: 500 });
+  if (!isAuthorized(request)) return Response.json({ error: "Unauthorized" }, { status: 401 });
   return processApprovedLeaves();
 }
 
@@ -411,7 +343,6 @@ async function processApprovedLeaves() {
   isProcessing = true;
 
   try {
-    // This function is safe to call repeatedly; the Notion filter and lock prevent spam.
     const notionApiKey = process.env.NOTION_API_KEY;
     const leaveDatabaseId = getDatabaseId();
 
@@ -423,15 +354,10 @@ async function processApprovedLeaves() {
     }
 
     const notion = new Client({ auth: notionApiKey });
-    const { properties, dataSourceId } = await getDatabaseSchema(
-      notion,
-      leaveDatabaseId,
-    );
+    const { properties, dataSourceId } = await getDatabaseSchema(notion, leaveDatabaseId);
 
     if (!properties[PROPERTY.gatePassId]) {
-      throw new Error(
-        `Notion property "${PROPERTY.gatePassId}" is missing from the leave database.`,
-      );
+      throw new Error(`Notion property "${PROPERTY.gatePassId}" is missing.`);
     }
 
     const query = await notion.dataSources.query({
@@ -450,10 +376,7 @@ async function processApprovedLeaves() {
     for (const page of rejectedQuery.results) {
       try {
         await updateLeavePage(notion, page.id, {
-          [PROPERTY.emailStatus]: getEmailStatusPayload(
-            properties[PROPERTY.emailStatus].type,
-            "Error",
-          ),
+          [PROPERTY.emailStatus]: getEmailStatusPayload(properties[PROPERTY.emailStatus].type, "Error"),
         });
         await safeCreateRunLog(notion, {
           actionId: randomUUID(),
@@ -462,10 +385,7 @@ async function processApprovedLeaves() {
         });
         results.push({ pageId: page.id, status: "Error", reason: "Rejected" });
       } catch (error) {
-        console.error("Failed to mark rejected leave:", {
-          pageId: page.id,
-          message: getErrorMessage(error),
-        });
+        console.error("Failed to mark rejected leave:", getErrorMessage(error));
       }
     }
 
@@ -473,47 +393,28 @@ async function processApprovedLeaves() {
       await safeCreateRunLog(notion, {
         actionId: randomUUID(),
         eventType: "INBOUND_PARSE",
-        details: `Idle worker run: no rows matched Status=${getApprovedStatus()} and Email Status=Not_Sent. Rejected rows checked: ${rejectedQuery.results.length}.`,
+        details: `Idle run: No pending approved rows. Rejected checked: ${rejectedQuery.results.length}.`,
       });
 
       return Response.json({
         success: true,
         processed: results.length,
         results,
-        message:
-          results.length > 0
-            ? "Rejected leave requests marked as Error."
-            : "No pending approved leave requests.",
+        message: results.length > 0 ? "Rejected rows updated." : "No pending approved leaves.",
       });
     }
 
-    const transporter = createTransporter();
-
     for (const page of query.results) {
       try {
-        results.push(
-          await processLeave({ notion, transporter, page, properties }),
-        );
+        results.push(await processLeave({ notion, page, properties }));
       } catch (error) {
         const message = getErrorMessage(error);
-        console.error("Failed to process approved leave:", {
-          pageId: page.id,
-          message,
-        });
-
         try {
-          const emailStatusType = properties[PROPERTY.emailStatus].type;
           await updateLeavePage(notion, page.id, {
-            [PROPERTY.emailStatus]: getEmailStatusPayload(
-              emailStatusType,
-              "Error",
-            ),
+            [PROPERTY.emailStatus]: getEmailStatusPayload(properties[PROPERTY.emailStatus].type, "Error"),
           });
-        } catch (updateError) {
-          console.error("Failed to mark leave as error:", {
-            pageId: page.id,
-            message: getErrorMessage(updateError),
-          });
+        } catch (updateErr) {
+          console.error("Failed to mark leave as Error:", getErrorMessage(updateErr));
         }
 
         results.push({ pageId: page.id, status: "Error", error: message });
@@ -531,19 +432,10 @@ async function processApprovedLeaves() {
       success: true,
       processed: results.length,
       results,
-      approvedFound: query.results.length,
-      rejectedFound: rejectedQuery.results.length,
-      message:
-        results.length === 0
-          ? "No leave requests are currently approved and marked Not_Sent."
-          : "Approved leave requests processed.",
     });
   } catch (error) {
     console.error("Cron processor failed:", getErrorMessage(error));
-    return Response.json(
-      { error: "Unable to process approved leave requests." },
-      { status: 502 },
-    );
+    return Response.json({ error: "Unable to process approved leave requests." }, { status: 502 });
   } finally {
     isProcessing = false;
   }

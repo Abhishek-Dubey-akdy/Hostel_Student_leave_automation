@@ -151,12 +151,15 @@ function createTransporter() {
     throw new Error(`Missing SMTP environment variables: ${missing.join(", ")}`);
   }
 
+  const configuredPort = Number(process.env.SMTP_PORT || 587);
+  const smtpPort = configuredPort === 465 ? 587 : configuredPort;
+
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
+    port: smtpPort,
     family: 4,
-    secure: process.env.SMTP_SECURE === "true",
-    requireTLS: process.env.SMTP_SECURE !== "true",
+    secure: smtpPort === 465,
+    requireTLS: smtpPort === 587,
     connectionTimeout: 8000,
     greetingTimeout: 8000,
     socketTimeout: 10000,

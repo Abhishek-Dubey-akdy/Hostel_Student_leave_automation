@@ -3,6 +3,7 @@ import nodemailer from "nodemailer";
 import QRCode from "qrcode";
 import { randomUUID } from "node:crypto";
 import dns from "node:dns";
+
 dns.setDefaultResultOrder("ipv4first");
 
 export const runtime = "nodejs";
@@ -144,20 +145,7 @@ function ipv4Lookup(hostname, options, callback) {
   return dns.lookup(hostname, { ...options, family: 4 }, callback);
 }
 
-async function getGmailIPv4() {
-  try {
-    const addresses = await dns.resolve4("smtp.gmail.com");
-    if (addresses && addresses.length > 0) {
-      return addresses[0];
-    }
-  } catch (error) {
-    console.warn("DNS resolve4 failed, using fallback Google IP:", error);
-  }
-  // Hardcoded fallback Google SMTP IPv4 in case DNS fails completely
-  return "142.250.102.108";
-}
-
-async function createTransporter() {
+function createTransporter() {
   // SMTP credentials stay on the server; they are never sent to the browser.
   const required = [
     "SMTP_USER",
@@ -169,26 +157,22 @@ async function createTransporter() {
     throw new Error(`Missing SMTP environment variables: ${missing.join(", ")}`);
   }
 
-  // Strictly get an IPv4 IP address (e.g. 142.250.x.x)
-  const ipv4Address = await getGmailIPv4();
-  console.log(`[SMTP] Connecting strictly to IPv4: ${ipv4Address}:587`);
 
   return nodemailer.createTransport({
-    host: ipv4Address,
-    port: 587,
-    secure: false,
-    requireTLS: true,
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    lookup: ipv4Lookup,
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASSWORD,
     },
     tls: {
-      servername: "smtp.gmail.com",
       rejectUnauthorized: false, // Prevents self-signed/proxy cert drops in cloud containers
     },
-    connectionTimeout: 15000,
-    greetingTimeout: 15000,
-    socketTimeout: 20000,
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,
+    socketTimeout: 35000,
   });
 }
 
@@ -503,7 +487,7 @@ async function processApprovedLeaves() {
       });
     }
 
-    const transporter = await createTransporter();
+    const transporter = createTransporter();
 
     for (const page of query.results) {
       try {

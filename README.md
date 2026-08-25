@@ -11,7 +11,7 @@ This is a Next.js hostel leave automation project.
 
 ## Required Environment Variables
 
-Set these in `.env` for local development and in the Vercel project settings for deployment:
+Set these in `.env` for local development and in the Vercel or Render (Recommended for this project) project settings for deployment:
 
 ```env
 GEMINI_API_KEY=your_gemini_key
